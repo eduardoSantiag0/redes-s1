@@ -1,0 +1,43 @@
+#!/usr/bin/env python3
+# Antes de usar, execute o seguinte comando para evitar que o Linux feche
+# as conexões TCP que o seu programa estiver tratando:
+#
+# sudo iptables -I OUTPUT -p tcp --tcp-flags RST RST -j DROP
+
+
+# Este é um exemplo de um programa que faz eco, ou seja, envia de volta para
+# o cliente tudo que for recebido em uma conexão.
+
+import asyncio
+from camadaenlace import CamadaEnlaceLinux
+from tcp import Servidor   # copie o arquivo do Trabalho 2
+from ip import IP
+
+def dados_recebidos(conexao, dados):
+    if dados == b'':
+        conexao.fechar()
+    else:
+        conexao.enviar(dados)   # envia de volta
+
+def conexao_aceita(conexao):
+    conexao.registrar_recebedor(dados_recebidos)   # usa esse mesmo recebedor para toda conexão aceita
+
+async def main():
+    enlace = CamadaEnlaceLinux()
+    rede = IP(enlace)
+    rede.definir_endereco_host('172.30.192.1')  # altere para o endereço IP da sua máquina, consulte-o com o comando: ip addr
+    rede.definir_tabela_encaminhamento([
+        ('172.30.192.1/32', '172.30.192.1'),
+        ('0.0.0.0/0', '192.168.88.1')
+    ])
+    servidor = Servidor(rede, 7000)
+    servidor.registrar_monitor_de_conexoes_aceitas(conexao_aceita)
+
+    await asyncio.Event().wait()
+
+
+if __name__ == '__main__':
+    asyncio.run(main())
+
+# IMPORTANTE: Para conectar ao servidor (por exemplo com o nc), você não vai mais usar o endereço localhost nem 127.0.0.1.
+# A partir de agora você vai usar o mesmo endereço que passou para rede.definir_endereco_host (acima).

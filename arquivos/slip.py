@@ -1,0 +1,99 @@
+class CamadaEnlace:
+    ignore_checksum = False
+
+    def __init__(self, linhas_seriais):
+        """
+        Inicia uma camada de enlace com um ou mais enlaces, cada um conectado
+        a uma linha serial distinta. O argumento linhas_seriais é um dicionário
+        no formato {ip_outra_ponta: linha_serial}. O ip_outra_ponta é o IP do
+        host ou roteador que se encontra na outra ponta do enlace, escrito como
+        uma string no formato 'x.y.z.w'. A linha_serial é um objeto da classe
+        PTY (vide camadafisica.py) ou de outra classe que implemente os métodos
+        registrar_recebedor e enviar.
+        """
+        self.enlaces = {}
+        self.callback = None
+        # Constrói um Enlace para cada linha serial
+        for ip_outra_ponta, linha_serial in linhas_seriais.items():
+            enlace = Enlace(linha_serial)
+            self.enlaces[ip_outra_ponta] = enlace
+            enlace.registrar_recebedor(self._callback)
+
+    def registrar_recebedor(self, callback):
+        """
+        Registra uma função para ser chamada quando dados vierem da camada de enlace
+        """
+        self.callback = callback
+
+    def enviar(self, datagrama, next_hop):
+        """
+        Envia datagrama para next_hop, onde next_hop é um endereço IPv4
+        fornecido como string (no formato x.y.z.w). A camada de enlace se
+        responsabilizará por encontrar em qual enlace se encontra o next_hop.
+        """
+        # Encontra o Enlace capaz de alcançar next_hop e envia por ele
+        self.enlaces[next_hop].enviar(datagrama)
+
+    def _callback(self, datagrama):
+        if self.callback:
+            self.callback(datagrama)
+
+
+class Enlace:
+    def __init__(self, linha_serial):
+        self.linha_serial = linha_serial
+        self.linha_serial.registrar_recebedor(self.__raw_recv)
+        self.callback = None
+        # guarda os bytes do quadro que ainda está chegando
+        self.datagrama = b''
+        # fica True quando o último byte recebido foi um 0xDB (início de escape)
+        self.escape = False
+
+    def registrar_recebedor(self, callback):
+        self.callback = callback
+
+    def enviar(self, datagrama):
+        # Passo 2: troca os bytes especiais pelas sequências de escape.
+        # Tem que trocar o 0xDB primeiro, senão o 0xDB que aparece no escape
+        # do 0xC0 (0xDB 0xDC) ia ser trocado de novo.
+        datagrama = datagrama.replace(b'\xdb', b'\xdb\xdd')
+        datagrama = datagrama.replace(b'\xc0', b'\xdb\xdc')
+
+        # Passo 1: coloca o 0xC0 no começo e no fim do quadro
+        quadro = b'\xc0' + datagrama + b'\xc0'
+        self.linha_serial.enviar(quadro)
+
+    def __raw_recv(self, dados):
+        # Os dados podem chegar quebrados, então vou lendo byte por byte e
+        # guardando em self.datagrama até achar o 0xC0 que fecha o quadro.
+        for byte in dados:
+            if byte == 0xC0:
+                # fim do quadro
+                self.escape = False
+                # Passo 3: não repassa datagrama vazio
+                if self.datagrama != b'':
+                    # Passo 5: se der erro na camada de cima, mostra o erro
+                    # mas limpa o buffer para não repassar o lixo de novo
+                    try:
+                        self.callback(self.datagrama)
+                    except:
+                        import traceback
+                        traceback.print_exc()
+                    finally:
+                        self.datagrama = b''
+            elif self.escape:
+                # Passo 4: o byte anterior foi 0xDB, então desfaz o escape
+                if byte == 0xDC:
+                    self.datagrama += b'\xc0'
+                elif byte == 0xDD:
+                    self.datagrama += b'\xdb'
+                else:
+                    # sequência inválida, a RFC diz para deixar o byte como está
+                    self.datagrama += bytes([byte])
+                self.escape = False
+            elif byte == 0xDB:
+                # começo de uma sequência de escape, o próximo byte diz qual é
+                self.escape = True
+            else:
+                # byte normal
+                self.datagrama += bytes([byte])
